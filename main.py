@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
-from pyrogram import Client, errors
+from pyrogram import Client
 import os
 import asyncio
 import io
@@ -11,38 +11,27 @@ API_ID = int(os.environ.get("API_ID"))
 API_HASH = os.environ.get("API_HASH")
 SESSION_STRING = os.environ.get("SESSION_STRING")
 
-CHANNEL_INVITE_LINK = "https://t.me/+tjAFFEsryVs3YTU1"  # Your invite link
+CHANNEL_ID = -1002734341593  # ✅ Your actual channel ID
 
 client = Client("streamer", api_id=API_ID, api_hash=API_HASH, session_string=SESSION_STRING)
-
 
 @app.get("/")
 def home():
     return {"status": "✅ Telegram Video Streamer is Running"}
 
-
 @app.get("/stream/{message_id}")
 async def stream_video(message_id: int):
     await client.start()
     try:
-        # ✅ Attempt to join the private channel only if not already in it
-        try:
-            await client.join_chat(CHANNEL_INVITE_LINK)
-        except errors.UserAlreadyParticipant:
-            pass  # Already joined — safe to continue
+        # ✅ Get message from private channel
+        message = await client.get_messages(CHANNEL_ID, message_id)
 
-        # ✅ Get the video message
-        message = await client.get_messages(CHANNEL_INVITE_LINK, message_id)
-
-        # ✅ Download and stream
         file_stream = io.BytesIO()
         await client.download_media(message, file_stream)
         file_stream.seek(0)
 
         return StreamingResponse(file_stream, media_type="video/mp4")
-
     except Exception as e:
         return {"error": str(e)}
-
     finally:
         await client.stop()
