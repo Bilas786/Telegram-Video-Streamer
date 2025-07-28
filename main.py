@@ -38,4 +38,4 @@ async def stream_video(message_id: int):
     except Exception as e:
         return {"error": str(e)}
     finally:
-        await client.stop()￼Enter
+        await client.stop()
