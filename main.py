@@ -1,35 +1,47 @@
-from fastapi import FastAPI, HTTPException from fastapi.responses import StreamingResponse from pyrogram import Client from pyrogram.errors import FloodWait, PeerIdInvalid, UsernameNotOccupied, UserAlreadyParticipant import asyncio import os
+from fastapi import FastAPI, Request, HTTPException
+from fastapi.responses import StreamingResponse
+from pyrogram import Client
+import os
+import asyncio
+from typing import AsyncGenerator
 
 app = FastAPI()
 
-API_ID = int(os.getenv("API_ID")) API_HASH = os.getenv("API_HASH") SESSION_STRING = os.getenv("SESSION_STRING") OWNER_ID = int(os.getenv("OWNER_ID"))  # numeric Telegram ID
+API_ID = int(os.environ.get("API_ID"))
+API_HASH = os.environ.get("API_HASH")
+SESSION_STRING = os.environ.get("SESSION_STRING")
+OWNER_ID = int(os.environ.get("OWNER_ID"))  # Optional but good to include
 
-app.client = Client( "streamer", api_id=API_ID, api_hash=API_HASH, session_string=SESSION_STRING )
+client = Client(
+    name="streamer",
+    api_id=API_ID,
+    api_hash=API_HASH,
+    session_string=SESSION_STRING,
+)
 
-@app.on_event("startup") async def startup(): await app.client.start()
+@app.on_event("startup")
+async def startup_event():
+    await client.start()
 
-@app.on_event("shutdown") async def shutdown(): await app.client.stop()
+@app.on_event("shutdown")
+async def shutdown_event():
+    await client.stop()
 
-@app.get("/") async def root(): return {"message": "Telegram Video Streamer Running Successfully!"}
+@app.get("/")
+async def root():
+    return {"status": "MTProto Streamer is Running ✅"}
 
-@app.get("/stream/{message_id}") async def stream_video(message_id: int): chat_id = "me"  # default to saved messages or use private channel ID if needed
+@app.get("/stream/{chat_id}/{message_id}")
+async def stream_file(chat_id: str, message_id: int):
+    try:
+        message = await client.get_messages(chat_id, message_id)
+        if not message.video and not message.document:
+            raise HTTPException(status_code=400, detail="No streamable media in this message")
 
-try:
-    msg = await app.client.get_messages(chat_id, message_id)
-    if not msg.video and not msg.document:
-        raise HTTPException(status_code=404, detail="No video/document found in this message")
+        async def file_stream() -> AsyncGenerator[bytes, None]:
+            async for chunk in client.stream_media(message):
+                yield chunk
 
-    file = await app.client.download_media(msg, in_memory=True)
-    return StreamingResponse(file, media_type="video/mp4")
-
-except PeerIdInvalid:
-    raise HTTPException(status_code=400, detail="Peer ID invalid: Make sure you're accessing your own channel or saved messages")
-except UsernameNotOccupied:
-    raise HTTPException(status_code=400, detail="The username is invalid or not occupied")
-except UserAlreadyParticipant:
-    pass  # skip join attempt if already participant
-except ModuleNotFoundError as e:
-    raise HTTPException(status_code=500, detail=f"Missing module: {str(e)}")
-except Exception as e:
-    raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
-
+        return StreamingResponse(file_stream(), media_type="video/mp4")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
