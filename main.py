@@ -1,54 +1,50 @@
-import os
-from fastapi import FastAPI, HTTPException
-from pyrogram import Client, errors
+from fastapi import FastAPI
+from pyrogram import Client
+from pyrogram.errors import UserAlreadyParticipant
+
+import os, asyncio
 
 app = FastAPI()
 
-API_ID = int(os.environ.get("API_ID"))
-API_HASH = os.environ.get("API_HASH")
-SESSION_STRING = os.environ.get("SESSION_STRING")
-CHAT_ID = int(os.environ.get("CHAT_ID"))  # must be numeric ID like -1002734341593
+API_ID = int(os.environ["API_ID"])
+API_HASH = os.environ["API_HASH"]
+SESSION_STRING = os.environ["SESSION_STRING"]
+INVITE_LINK = os.environ["INVITE_LINK"]
 
-tg_client = Client(
-    "tg_session",
-    api_id=API_ID,
-    api_hash=API_HASH,
-    session_string=SESSION_STRING
-)
+pyro_app = Client("streamer", api_id=API_ID, api_hash=API_HASH, session_string=SESSION_STRING)
 
 @app.on_event("startup")
-async def startup():
-    await tg_client.start()
-
-    # Try to join the channel if not already a member
-    try:
-        await tg_client.join_chat(CHAT_ID)
-    except errors.UserAlreadyParticipant:
-        # Already joined, no problem
-        pass
-    except Exception as e:
-        print(f"Join chat warning: {e}")
-
-@app.on_event("shutdown")
-async def shutdown():
-    await tg_client.stop()
+async def startup_event():
+    await pyro_app.start()
 
 @app.get("/")
-async def root():
+async def home():
     return {"message": "Telegram video streamer is working!"}
 
 @app.get("/videos")
 async def get_videos():
     try:
+        # First, try to join or confirm membership
+        try:
+            await pyro_app.join_chat(INVITE_LINK)
+        except UserAlreadyParticipant:
+            pass  # already joined
+
+        # Resolve chat from invite link
+        chat = await pyro_app.get_chat(INVITE_LINK)
+
+        # Fetch last 20 video messages
         videos = []
-        async for msg in tg_client.get_chat_history(CHAT_ID, limit=20):
+        async for msg in pyro_app.get_chat_history(chat.id, limit=20):
             if msg.video:
                 videos.append({
-                    "message_id": msg.message_id,
-                    "file_name": msg.video.file_name or "Unknown",
+                    "message_id": msg.id,
+                    "file_name": msg.video.file_name,
                     "duration": msg.video.duration,
-                    "mime_type": msg.video.mime_type
+                    "chat_id": chat.id
                 })
+
         return {"videos": videos}
+
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error fetching videos: {e}")
+        return {"detail": f"Error fetching videos: {e}"}
