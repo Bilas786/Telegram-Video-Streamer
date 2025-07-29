@@ -1,4 +1,4 @@
 fastapi
 uvicorn
-pyrogram
 tgcrypto
+pyrogram==2.0.106
