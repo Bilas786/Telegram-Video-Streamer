@@ -1,40 +1,54 @@
 import os
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import StreamingResponse
-from pyrogram import Client
-import asyncio
+from pyrogram import Client, errors
 
-# Environment variables
-API_ID = int(os.getenv("API_ID"))
-API_HASH = os.getenv("API_HASH")
-SESSION_STRING = os.getenv("SESSION_STRING")
-CHAT_ID = int(os.getenv("CHAT_ID"))  # Example: -1002734341593
-
-# Initialize FastAPI
 app = FastAPI()
 
-# Pyrogram client
-client = Client("streamer", api_id=API_ID, api_hash=API_HASH, session_string=SESSION_STRING)
+API_ID = int(os.environ.get("API_ID"))
+API_HASH = os.environ.get("API_HASH")
+SESSION_STRING = os.environ.get("SESSION_STRING")
+CHAT_ID = int(os.environ.get("CHAT_ID"))  # must be numeric ID like -1002734341593
 
-# Start client
-loop = asyncio.get_event_loop()
-loop.run_until_complete(client.start())
+tg_client = Client(
+    "tg_session",
+    api_id=API_ID,
+    api_hash=API_HASH,
+    session_string=SESSION_STRING
+)
 
+@app.on_event("startup")
+async def startup():
+    await tg_client.start()
+
+    # Try to join the channel if not already a member
+    try:
+        await tg_client.join_chat(CHAT_ID)
+    except errors.UserAlreadyParticipant:
+        # Already joined, no problem
+        pass
+    except Exception as e:
+        print(f"Join chat warning: {e}")
+
+@app.on_event("shutdown")
+async def shutdown():
+    await tg_client.stop()
 
 @app.get("/")
-def home():
+async def root():
     return {"message": "Telegram video streamer is working!"}
 
-
-@app.get("/stream/{message_id}")
-async def stream_video(message_id: int):
+@app.get("/videos")
+async def get_videos():
     try:
-        msg = await client.get_messages(CHAT_ID, message_id)
-        if not msg.video and not msg.document:
-            raise HTTPException(status_code=404, detail="This message does not contain a video")
-
-        file = await msg.download(in_memory=True)
-        return StreamingResponse(file, media_type="video/mp4")
-
+        videos = []
+        async for msg in tg_client.get_chat_history(CHAT_ID, limit=20):
+            if msg.video:
+                videos.append({
+                    "message_id": msg.message_id,
+                    "file_name": msg.video.file_name or "Unknown",
+                    "duration": msg.video.duration,
+                    "mime_type": msg.video.mime_type
+                })
+        return {"videos": videos}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"Error fetching videos: {e}")
