@@ -1,4 +1,5 @@
 import os
+import asyncio
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pyrogram import Client
@@ -6,6 +7,7 @@ from pyrogram import Client
 API_ID = int(os.getenv("API_ID", 0))
 API_HASH = os.getenv("API_HASH")
 SESSION_STRING = os.getenv("SESSION_STRING")
+CHAT_USERNAME = os.getenv("CHAT_ID", "moviesnesthub")  # Channel username
 
 app = FastAPI()
 
@@ -29,13 +31,12 @@ async def shutdown_event():
 
 @app.get("/videos")
 async def list_videos():
-    chat_id = os.getenv("CHAT_ID", "moviesnesthub")  # Username or ID
     videos = []
-    async for msg in client.get_chat_history(chat_id, limit=20):
-        if msg.video or (msg.document and msg.document.mime_type.startswith("video/")):
+    async for msg in client.get_chat_history(CHAT_USERNAME, limit=20):
+        if msg.video or (msg.document and msg.document.mime_type and msg.document.mime_type.startswith("video/")):
             file_name = msg.video.file_name if msg.video else msg.document.file_name
             videos.append({
-                "chat_id": str(msg.chat.id),  # String to avoid Peer ID invalid
+                "chat_id": CHAT_USERNAME,   # username instead of numeric id
                 "message_id": msg.id,
                 "file_name": file_name
             })
@@ -44,31 +45,39 @@ async def list_videos():
 @app.get("/stream/{chat_id}/{message_id}")
 async def stream_video(chat_id: str, message_id: int, request: Request):
     try:
-        # ✅ Use string chat_id for Pyrogram to avoid Peer ID errors
         msg = await client.get_messages(chat_id, message_id)
         media = msg.video or msg.document
         if not media:
             raise HTTPException(status_code=404, detail="No video found in this message")
 
+        # Get the file size
         file_size = media.file_size
 
-        # Range request for skipping
-        range_header = request.headers.get("range")
+        # Handle HTTP range for skipping
+        range_header = request.headers.get('range')
         start = 0
-        if range_header:
-            start = int(range_header.replace("bytes=", "").split("-")[0])
-
-        async def file_iterator():
-            async for chunk in client.stream_media(msg, offset=start):
-                yield chunk
-
+        end = file_size - 1
+        status_code = 200
         headers = {
             "Content-Type": "video/mp4",
-            "Accept-Ranges": "bytes",
-            "Content-Range": f"bytes {start}-{file_size-1}/{file_size}"
+            "Accept-Ranges": "bytes"
         }
-        status_code = 206 if range_header else 200
-        return StreamingResponse(file_iterator(), headers=headers, status_code=status_code)
+
+        if range_header:
+            # Example: "bytes=1000-"
+            bytes_range = range_header.replace("bytes=", "").split("-")
+            start = int(bytes_range[0])
+            if bytes_range[1]:
+                end = int(bytes_range[1])
+            status_code = 206
+            headers["Content-Range"] = f"bytes {start}-{end}/{file_size}"
+            headers["Content-Length"] = str(end - start + 1)
+
+        async def video_stream():
+            async for chunk in client.stream_media(msg, offset=start, limit=end-start+1):
+                yield chunk
+
+        return StreamingResponse(video_stream(), status_code=status_code, headers=headers)
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
