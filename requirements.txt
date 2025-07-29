@@ -1,6 +1,4 @@
 flask
-fastapi
-uvicorn
 pyrogram
 tgcrypto
 nest_asyncio
