@@ -1,79 +1,76 @@
 import os
 import asyncio
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse
-from pyrogram import Client, errors
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import StreamingResponse
+from pyrogram import Client
+
+API_ID = int(os.getenv("API_ID", 0))
+API_HASH = os.getenv("API_HASH")
+SESSION_STRING = os.getenv("SESSION_STRING")
 
 app = FastAPI()
 
-# ──── Configure via ENV VARS ─────────────────────────────
-API_ID         = int(os.getenv("API_ID"))
-API_HASH       = os.getenv("API_HASH")
-SESSION_STRING = os.getenv("SESSION_STRING")
-INVITE_LINK    = os.getenv("INVITE_LINK")   # e.g. https://t.me/+tjAFFEsryVs3YTU1
-CHAT_ID        = int(os.getenv("CHAT_ID"))  # e.g. -1002734341593
-
-# ──── Initialize Pyrogram ────────────────────────────────
-tg = Client(
-    "streamer",
+client = Client(
+    name="stream_bot",
     api_id=API_ID,
     api_hash=API_HASH,
     session_string=SESSION_STRING
 )
 
+
 @app.on_event("startup")
-async def startup():
-    await tg.start()
-    # join (or skip if already a member)
-    try:
-        await tg.join_chat(INVITE_LINK)
-    except errors.UserAlreadyParticipant:
-        pass
-    except Exception as e:
-        print("⚠️ Join warning:", e)
+async def startup_event():
+    print("✅ Starting Pyrogram client...")
+    await client.start()
+    print("✅ Pyrogram client started!")
+
 
 @app.on_event("shutdown")
-async def shutdown():
-    await tg.stop()
+async def shutdown_event():
+    await client.stop()
+    print("❌ Pyrogram client stopped!")
 
-# ──── Home & Player UI ───────────────────────────────────
-@app.get("/", response_class=HTMLResponse)
-async def home():
-    return """
-    <h1>Telegram Video Streamer</h1>
-    <p>Use <code>/stream/&lt;message_id&gt;</code> to play.</p>
-    <form action="/stream" method="get">
-      Message ID: <input name="id" required>
-      <button>Play</button>
-    </form>
-    """
 
-@app.get("/stream", response_class=HTMLResponse)
-async def play_form(id: int):
-    # Simple HTML5 player
-    return f'''
-    <video controls width="100%" height="auto">
-      <source src="/stream/{id}" type="video/mp4">
-      Your browser does not support the video tag.
-    </video>
-    '''
+@app.get("/videos")
+async def list_videos():
+    chat_id = os.getenv("CHAT_ID", "moviesnesthub")  # Your channel username
+    videos = []
+    async for msg in client.get_chat_history(chat_id, limit=20):
+        if msg.video or msg.document:
+            file_name = None
+            if msg.video:
+                file_name = msg.video.file_name
+            elif msg.document and msg.document.mime_type.startswith("video/"):
+                file_name = msg.document.file_name
 
-# ──── Streaming Endpoint ─────────────────────────────────
-@app.get("/stream/{msg_id}")
-async def stream_video(request: Request, msg_id: int):
-    # temp path
-    tmp = f"/tmp/{msg_id}.mp4"
+            videos.append({
+                "chat_id": msg.chat.id,
+                "message_id": msg.id,
+                "file_name": file_name
+            })
+    return videos
+
+
+@app.get("/stream/{chat_id}/{message_id}")
+async def stream_video(chat_id: int, message_id: int):
     try:
-        msg = await tg.get_messages(CHAT_ID, msg_id)
-        if not (msg.video or msg.document):
-            raise HTTPException(404, "No video found in this message")
+        msg = await client.get_messages(chat_id, message_id)
+        media = msg.video or msg.document
+        if not media:
+            raise HTTPException(status_code=404, detail="No video found in this message")
 
-        # download if not exists
-        if not os.path.exists(tmp):
-            await tg.download_media(msg, file_name=tmp)
+        async def iterfile():
+            async for chunk in client.stream_media(msg):
+                yield chunk
 
-        return FileResponse(tmp, media_type="video/mp4")
-    except errors.PeerIdInvalid:
-        raise HTTPException(400, "Peer ID invalid – check your CHAT_ID or invite link")
+        return StreamingResponse(iterfile(), media_type="video/mp4")
+
     except Exception as e:
-        raise HTTPException(500, str(e))
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+if __name__ == "__main__":
+    import uvicorn
+    print("🚀 Starting main.py ...")
+    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 10000)))
+
