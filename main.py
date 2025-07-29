@@ -1,11 +1,13 @@
 import os
-from fastapi import FastAPI, HTTPException, Request
+import asyncio
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import StreamingResponse
 from pyrogram import Client
 
 API_ID = int(os.getenv("API_ID", 0))
 API_HASH = os.getenv("API_HASH")
 SESSION_STRING = os.getenv("SESSION_STRING")
+CHAT_USERNAME = os.getenv("CHAT_USERNAME", "moviesnesthub")  # ✅ username only
 
 app = FastAPI()
 
@@ -16,75 +18,73 @@ client = Client(
     session_string=SESSION_STRING
 )
 
-
 @app.on_event("startup")
 async def startup_event():
     print("✅ Starting Pyrogram client...")
     await client.start()
     print("✅ Pyrogram client started!")
 
-
 @app.on_event("shutdown")
 async def shutdown_event():
     await client.stop()
     print("❌ Pyrogram client stopped!")
 
-
 @app.get("/videos")
 async def list_videos():
-    chat_id = os.getenv("CHAT_ID", "moviesnesthub")  # Your channel username
     videos = []
-    async for msg in client.get_chat_history(chat_id, limit=20):
-        if msg.video or (msg.document and msg.document.mime_type and msg.document.mime_type.startswith("video/")):
+    async for msg in client.get_chat_history(CHAT_USERNAME, limit=20):
+        if msg.video or (msg.document and msg.document.mime_type.startswith("video/")):
             file_name = msg.video.file_name if msg.video else msg.document.file_name
+            file_size = msg.video.file_size if msg.video else msg.document.file_size
             videos.append({
-                "chat_id": msg.chat.username or msg.chat.id,
                 "message_id": msg.id,
-                "file_name": file_name
+                "file_name": file_name,
+                "file_size": file_size
             })
     return videos
 
-
-@app.get("/stream/{chat_id}/{message_id}")
-async def stream_video(chat_id: str, message_id: int, request: Request):
+@app.get("/stream/{message_id}")
+async def stream_video(message_id: int, request: Request):
     try:
-        # Force Pyrogram to resolve peer first
-        chat = await client.get_chat(chat_id)
-        msg = await client.get_messages(chat.id, message_id)
+        msg = await client.get_messages(CHAT_USERNAME, message_id)
         media = msg.video or msg.document
         if not media:
             raise HTTPException(status_code=404, detail="No video found in this message")
 
         file_size = media.file_size
-
-        # Handle Range headers for seeking/skipping
-        range_header = request.headers.get('range')
-        start = 0
-        end = file_size - 1
-        status_code = 200
-        headers = {
-            "Content-Type": "video/mp4",
-            "Accept-Ranges": "bytes"
-        }
+        range_header = request.headers.get("range")
 
         if range_header:
-            bytes_range = range_header.replace("bytes=", "").split("-")
-            start = int(bytes_range[0])
-            if bytes_range[1]:
-                end = int(bytes_range[1])
-            status_code = 206
-            headers["Content-Range"] = f"bytes {start}-{end}/{file_size}"
-            headers["Content-Length"] = str(end - start + 1)
+            byte1, byte2 = 0, None
+            match = range_header.replace("bytes=", "").split("-")
+            if match[0]:
+                byte1 = int(match[0])
+            if len(match) > 1 and match[1]:
+                byte2 = int(match[1])
 
-        async def video_stream():
-            async for chunk in client.stream_media(msg, offset=start, limit=end - start + 1):
+            length = file_size - byte1 if byte2 is None else byte2 - byte1 + 1
+
+            async def iterfile(start, length):
+                async for chunk in client.stream_media(msg, offset=start, limit=length):
+                    yield chunk
+
+            headers = {
+                "Content-Range": f"bytes {byte1}-{byte1+length-1}/{file_size}",
+                "Accept-Ranges": "bytes",
+                "Content-Length": str(length),
+                "Content-Type": "video/mp4",
+            }
+            return StreamingResponse(iterfile(byte1, length), status_code=206, headers=headers)
+
+        # No range requested → full file
+        async def iterfile_full():
+            async for chunk in client.stream_media(msg):
                 yield chunk
 
-        return StreamingResponse(video_stream(), status_code=status_code, headers=headers)
+        return StreamingResponse(iterfile_full(), media_type="video/mp4")
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
 
 if __name__ == "__main__":
     import uvicorn
