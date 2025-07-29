@@ -1,35 +1,35 @@
-from flask import Flask, jsonify
-from pyrogram import Client
-import asyncio
-import os
-import nest_asyncio
+from fastapi import FastAPI, HTTPException from fastapi.responses import StreamingResponse from pyrogram import Client from pyrogram.errors import FloodWait, PeerIdInvalid, UsernameNotOccupied, UserAlreadyParticipant import asyncio import os
 
-nest_asyncio.apply()
+app = FastAPI()
 
-API_ID = int(os.environ.get("API_ID"))
-API_HASH = os.environ.get("API_HASH")
-SESSION_STRING = os.environ.get("SESSION_STRING")
+API_ID = int(os.getenv("API_ID")) API_HASH = os.getenv("API_HASH") SESSION_STRING = os.getenv("SESSION_STRING") OWNER_ID = int(os.getenv("OWNER_ID"))  # numeric Telegram ID
 
-app = Flask(__name__)
-client = Client("streamer", api_id=API_ID, api_hash=API_HASH, session_string=SESSION_STRING)
+app.client = Client( "streamer", api_id=API_ID, api_hash=API_HASH, session_string=SESSION_STRING )
 
-@app.route("/")
-def home():
-    return "✅ Telegram Video Streamer is running!"
+@app.on_event("startup") async def startup(): await app.client.start()
 
-@app.route("/join")
-def join_channel():
-    async def do_join():
-        try:
-            await client.start()
-            await client.join_chat("https://t.me/+tjAFFEsryVs3YTU1")  # ✅ Correct format
-            await client.stop()
-            return {"status": "joined"}
-        except Exception as e:
-            return {"error": str(e)}
+@app.on_event("shutdown") async def shutdown(): await app.client.stop()
 
-    result = asyncio.run(do_join())
-    return jsonify(result)
+@app.get("/") async def root(): return {"message": "Telegram Video Streamer Running Successfully!"}
 
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
+@app.get("/stream/{message_id}") async def stream_video(message_id: int): chat_id = "me"  # default to saved messages or use private channel ID if needed
+
+try:
+    msg = await app.client.get_messages(chat_id, message_id)
+    if not msg.video and not msg.document:
+        raise HTTPException(status_code=404, detail="No video/document found in this message")
+
+    file = await app.client.download_media(msg, in_memory=True)
+    return StreamingResponse(file, media_type="video/mp4")
+
+except PeerIdInvalid:
+    raise HTTPException(status_code=400, detail="Peer ID invalid: Make sure you're accessing your own channel or saved messages")
+except UsernameNotOccupied:
+    raise HTTPException(status_code=400, detail="The username is invalid or not occupied")
+except UserAlreadyParticipant:
+    pass  # skip join attempt if already participant
+except ModuleNotFoundError as e:
+    raise HTTPException(status_code=500, detail=f"Missing module: {str(e)}")
+except Exception as e:
+    raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
+
