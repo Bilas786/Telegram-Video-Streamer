@@ -22,7 +22,7 @@ def join_channel():
     async def do_join():
         try:
             await client.start()
-            await client.join_chat("tjAFFEsryVs3YTU1")  # Replace with your invite hash
+            await client.join_chat("https://t.me/+tjAFFEsryVs3YTU1")  # ✅ Correct format
             await client.stop()
             return {"status": "joined"}
         except Exception as e:
